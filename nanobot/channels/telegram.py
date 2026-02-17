@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import dataclass
 from loguru import logger
 from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -13,6 +14,13 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import TelegramConfig
+
+
+@dataclass
+class MediaGroupEntry:
+    messages: list[any]
+    task: asyncio.Task
+
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -126,6 +134,7 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._media_buffer: dict[str, MediaGroupEntry] = {}
     
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -282,30 +291,8 @@ class TelegramChannel(BaseChannel):
             content=update.message.text,
         )
     
-    async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming messages (text, photos, voice, documents)."""
-        if not update.message or not update.effective_user:
-            return
-        
-        message = update.message
-        user = update.effective_user
-        chat_id = message.chat_id
-        sender_id = self._sender_id(user)
-        
-        # Store chat_id for replies
-        self._chat_ids[sender_id] = chat_id
-        
-        # Build content from text and/or media
-        content_parts = []
-        media_paths = []
-        
-        # Text content
-        if message.text:
-            content_parts.append(message.text)
-        if message.caption:
-            content_parts.append(message.caption)
-        
-        # Handle media files
+    async def _process_media_attachment(self, message) -> tuple[str | None, str | None]:
+        """Process media attachment and return (description/transcription, file_path)."""
         media_file = None
         media_type = None
         
@@ -321,63 +308,163 @@ class TelegramChannel(BaseChannel):
         elif message.document:
             media_file = message.document
             media_type = "file"
+            
+        if not media_file or not self._app:
+            return None, None
+            
+        try:
+            file = await self._app.bot.get_file(media_file.file_id)
+            ext = self._get_extension(media_type, getattr(media_file, 'mime_type', None))
+            
+            from pathlib import Path
+            media_dir = Path.home() / ".nanobot" / "media"
+            media_dir.mkdir(parents=True, exist_ok=True)
+            
+            file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
+            await file.download_to_drive(str(file_path))
+            
+            description = f"[{media_type}: {file_path}]"
+            
+            if media_type in ("voice", "audio"):
+                from nanobot.providers.transcription import GroqTranscriptionProvider
+                transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
+                transcription = await transcriber.transcribe(file_path)
+                if transcription:
+                    logger.info(f"Transcribed {media_type}: {transcription[:50]}...")
+                    description = f"[transcription: {transcription}]"
+            
+            logger.debug(f"Downloaded {media_type} to {file_path}")
+            return description, str(file_path)
+            
+        except Exception as e:
+            logger.error(f"Failed to download media: {e}")
+            return f"[{media_type}: download failed]", None
+
+    def _handle_media_group(self, message) -> None:
+        """Buffer media group messages to process them as a single event."""
+        gid = message.media_group_id
+        if gid in self._media_buffer:
+            entry = self._media_buffer[gid]
+            entry.messages.append(message)
+            entry.task.cancel()
+        else:
+            entry = MediaGroupEntry(messages=[message], task=None)
+            self._media_buffer[gid] = entry
+            
+        # Schedule processing with a delay (debounce)
+        entry.task = asyncio.create_task(self._wait_and_process_group(gid))
+
+    async def _wait_and_process_group(self, gid: str) -> None:
+        """Wait for more messages in the group, then process."""
+        await asyncio.sleep(1.0)  # Wait 1s for album to complete
+        if gid in self._media_buffer:
+            await self._process_media_group(gid)
+
+    async def _process_media_group(self, gid: str) -> None:
+        """Process a buffered media group."""
+        entry = self._media_buffer.pop(gid, None)
+        if not entry or not entry.messages:
+            return
+            
+        messages = sorted(entry.messages, key=lambda m: m.message_id)
+        primary = messages[0]
+        user = primary.from_user
+        chat_id = primary.chat_id
+        sender_id = self._sender_id(user)
         
-        # Download media if present
-        if media_file and self._app:
-            try:
-                file = await self._app.bot.get_file(media_file.file_id)
-                ext = self._get_extension(media_type, getattr(media_file, 'mime_type', None))
-                
-                # Save to workspace/media/
-                from pathlib import Path
-                media_dir = Path.home() / ".nanobot" / "media"
-                media_dir.mkdir(parents=True, exist_ok=True)
-                
-                file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
-                await file.download_to_drive(str(file_path))
-                
-                media_paths.append(str(file_path))
-                
-                # Handle voice transcription
-                if media_type == "voice" or media_type == "audio":
-                    from nanobot.providers.transcription import GroqTranscriptionProvider
-                    transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
-                    transcription = await transcriber.transcribe(file_path)
-                    if transcription:
-                        logger.info(f"Transcribed {media_type}: {transcription[:50]}...")
-                        content_parts.append(f"[transcription: {transcription}]")
-                    else:
-                        content_parts.append(f"[{media_type}: {file_path}]")
-                else:
-                    content_parts.append(f"[{media_type}: {file_path}]")
-                    
-                logger.debug(f"Downloaded {media_type} to {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to download media: {e}")
-                content_parts.append(f"[{media_type}: download failed]")
+        logger.info(f"Processing media group {gid} with {len(messages)} messages from {sender_id}")
         
-        content = "\n".join(content_parts) if content_parts else "[empty message]"
+        content_parts = []
+        media_paths = []
+        
+        # Combine text/captions
+        for m in messages:
+            if m.text: content_parts.append(m.text)
+            if m.caption: content_parts.append(m.caption)
+            
+        # Process all media
+        for m in messages:
+            desc, path = await self._process_media_attachment(m)
+            if path: media_paths.append(path)
+            # Only add description if it's a transcription or specialized (avoid spamming [image] for every photo in album if we have the file)
+            if desc and "transcription" in desc:
+                content_parts.append(desc)
+                
+        # If no text but we have media, add a generic label
+        if not content_parts and media_paths:
+            content_parts.append(f"[Received {len(media_paths)} media files]")
+            
+        content = "\n".join(content_parts) if content_parts else "[empty media group]"
+        
+        await self._dispatch_message(
+            sender_id=sender_id,
+            chat_id=chat_id,
+            user=user,
+            message_id=primary.message_id,
+            content=content,
+            media_paths=media_paths
+        )
+
+    async def _dispatch_message(self, sender_id, chat_id, user, message_id, content, media_paths) -> None:
+        """Common dispatch logic for single and grouped messages."""
+        str_chat_id = str(chat_id)
+        self._chat_ids[sender_id] = chat_id
         
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
         
-        str_chat_id = str(chat_id)
-        
-        # Start typing indicator before processing
         self._start_typing(str_chat_id)
         
-        # Forward to the message bus
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str_chat_id,
             content=content,
             media=media_paths,
             metadata={
-                "message_id": message.message_id,
+                "message_id": message_id,
                 "user_id": user.id,
                 "username": user.username,
                 "first_name": user.first_name,
-                "is_group": message.chat.type != "private"
+                "is_group": str_chat_id.startswith("-")
             }
+        )
+
+    async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming messages (text, photos, voice, documents)."""
+        if not update.message or not update.effective_user:
+            return
+        
+        message = update.message
+        
+        # Handle media groups (albums)
+        if message.media_group_id:
+            logger.debug(f"Buffering media group {message.media_group_id} msg {message.message_id}")
+            self._handle_media_group(message)
+            return
+
+        # Handle single messages
+        user = update.effective_user
+        
+        content_parts = []
+        media_paths = []
+        
+        if message.text:
+            content_parts.append(message.text)
+        if message.caption:
+            content_parts.append(message.caption)
+            
+        desc, path = await self._process_media_attachment(message)
+        if desc: content_parts.append(desc)
+        if path: media_paths.append(path)
+        
+        content = "\n".join(content_parts) if content_parts else "[empty message]"
+        
+        await self._dispatch_message(
+            sender_id=self._sender_id(user),
+            chat_id=message.chat_id,
+            user=user,
+            message_id=message.message_id,
+            content=content,
+            media_paths=media_paths
         )
     
     def _start_typing(self, chat_id: str) -> None:
