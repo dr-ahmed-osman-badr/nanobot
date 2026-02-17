@@ -163,11 +163,66 @@ class AgentDefaults(BaseModel):
     temperature: float = 0.7
     max_tool_iterations: int = 20
     memory_window: int = 50
+    # New fields aligned with OpenClaw
+    system_prompt_style: str = "full"  # "full", "minimal", "none"
+    enable_safety_guard: bool = True
+    enable_reflection: bool = False
+    enable_voice_response: bool = False
+
+
+
+class HeartbeatActiveHours(BaseModel):
+    start: str | None = None
+    end: str | None = None
+    timezone: str | None = None
+
+
+class HeartbeatConfig(BaseModel):
+    """Heartbeat configuration."""
+    every: str | None = None  # cron string or duration
+    active_hours: HeartbeatActiveHours | None = Field(default=None, alias="activeHours")
+    model: str | None = None
+    session: str | None = None
+    include_reasoning: bool | None = Field(default=None, alias="includeReasoning")
+    prompt: str | None = None
+
+
+class SandboxDockerConfig(BaseModel):
+    """Docker sandbox configuration."""
+    image: str | None = None
+    workdir: str | None = None
+    network: str | None = None
+
+
+class SandboxBrowserConfig(BaseModel):
+    """Browser sandbox configuration."""
+    enabled: bool = False
+    headless: bool = True
+    auto_start: bool = False
+
+
+class SandboxConfig(BaseModel):
+    """Sandbox configuration."""
+    mode: str = "off"  # off, non-main, all
+    workspace_access: str = "none"  # none, ro, rw
+    docker: SandboxDockerConfig = Field(default_factory=SandboxDockerConfig)
+    browser: SandboxBrowserConfig = Field(default_factory=SandboxBrowserConfig)
+
+
+class MemorySearchConfig(BaseModel):
+    """Memory vector search configuration."""
+    enabled: bool = False
+    provider: str = "openai"  # openai, local, gemini
+    model: str | None = None
 
 
 class AgentsConfig(BaseModel):
     """Agent configuration."""
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    memory_search: MemorySearchConfig = Field(default_factory=MemorySearchConfig)
+
 
 
 class ProviderConfig(BaseModel):
@@ -206,11 +261,21 @@ class WebSearchConfig(BaseModel):
     """Web search tool configuration."""
     api_key: str = ""  # Brave Search API key
     max_results: int = 5
+    provider: str = "brave"  # brave, perplexity, grok
+
+
+class WebFetchConfig(BaseModel):
+    """Web fetch configuration."""
+    enabled: bool = True
+    max_chars: int = 50000
+    timeout_seconds: int = 30
+    user_agent: str | None = None
 
 
 class WebToolsConfig(BaseModel):
     """Web tools configuration."""
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
 
 
 class ExecToolConfig(BaseModel):
@@ -226,12 +291,32 @@ class MCPServerConfig(BaseModel):
     url: str = ""  # HTTP: streamable HTTP endpoint URL
 
 
+class ToolProfile(BaseModel):
+    """Tool profile presets."""
+    profile: str = "full"  # minimal, coding, messaging, full
+
+
+class ToolsPolicyConfig(BaseModel):
+    """Tools filtering policy."""
+    profile: str = "full"
+    allow: list[str] = Field(default_factory=list)
+    also_allow: list[str] = Field(default_factory=list, alias="alsoAllow")
+    deny: list[str] = Field(default_factory=list)
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    
+    # New policy fields
+    profile: str = "full"
+    allow: list[str] = Field(default_factory=list)
+    also_allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
 
 
 class Config(BaseSettings):

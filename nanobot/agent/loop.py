@@ -54,8 +54,12 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
+        system_prompt_style: str = "full",
+        enable_safety_guard: bool = True,
+        enable_reflection: bool = False,
+        web_config: "WebToolsConfig | None" = None,
     ):
-        from nanobot.config.schema import ExecToolConfig
+        from nanobot.config.schema import ExecToolConfig, WebToolsConfig
         from nanobot.cron.service import CronService
         self.bus = bus
         self.provider = provider
@@ -65,12 +69,21 @@ class AgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.memory_window = memory_window
-        self.brave_api_key = brave_api_key
+        self.memory_window = memory_window
+        self.web_config = web_config or WebToolsConfig()
+        self.brave_api_key = brave_api_key or self.web_config.search.api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.system_prompt_style = system_prompt_style
+        self.enable_safety_guard = enable_safety_guard
+        self.enable_reflection = enable_reflection
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(
+            workspace, 
+            system_prompt_style=self.system_prompt_style,
+            enable_reflection=self.enable_reflection
+        )
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -101,15 +114,26 @@ class AgentLoop:
         self.tools.register(ListDirTool(allowed_dir=allowed_dir))
         
         # Shell tool
+        # If safety guard is disabled, clear deny_patterns to allow all commands
+        deny_patterns = None if self.enable_safety_guard else []
+        
         self.tools.register(ExecTool(
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
             restrict_to_workspace=self.restrict_to_workspace,
+            deny_patterns=deny_patterns,
         ))
         
         # Web tools
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key))
-        self.tools.register(WebFetchTool())
+        self.tools.register(WebSearchTool(
+            api_key=self.brave_api_key,
+            max_results=self.web_config.search.max_results
+        ))
+        self.tools.register(WebFetchTool(
+            max_chars=self.web_config.fetch.max_chars,
+            timeout=self.web_config.fetch.timeout_seconds,
+            user_agent=self.web_config.fetch.user_agent
+        ))
         self.tools.register(BrowserTool(headless=True))
         
         # Message tool

@@ -3,6 +3,11 @@
 import asyncio
 from pathlib import Path
 from typing import Any, Callable, Coroutine
+from datetime import datetime, time
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # type: ignore
 
 from loguru import logger
 
@@ -49,11 +54,13 @@ class HeartbeatService:
         on_heartbeat: Callable[[str], Coroutine[Any, Any, str]] | None = None,
         interval_s: int = DEFAULT_HEARTBEAT_INTERVAL_S,
         enabled: bool = True,
+        config: Any = None,  # HeartbeatConfig
     ):
         self.workspace = workspace
         self.on_heartbeat = on_heartbeat
         self.interval_s = interval_s
         self.enabled = enabled
+        self.config = config
         self._running = False
         self._task: asyncio.Task | None = None
     
@@ -101,6 +108,9 @@ class HeartbeatService:
     
     async def _tick(self) -> None:
         """Execute a single heartbeat tick."""
+        if not self._is_active_time():
+            return
+
         content = self._read_heartbeat_file()
         
         # Skip if HEARTBEAT.md is empty or doesn't exist
@@ -128,3 +138,35 @@ class HeartbeatService:
         if self.on_heartbeat:
             return await self.on_heartbeat(HEARTBEAT_PROMPT)
         return None
+
+    def _is_active_time(self) -> bool:
+        """Check if current time is within active hours."""
+        if not self.config or not self.config.active_hours:
+            return True
+            
+        active = self.config.active_hours
+        if not active.start or not active.end:
+            return True
+            
+        try:
+            tz = ZoneInfo(active.timezone) if active.timezone else None
+            now = datetime.now(tz).time()
+            
+            def parse_time(t_str):
+                try:
+                    h, m = map(int, t_str.split(":"))
+                    return time(h, m)
+                except ValueError:
+                    return time(0, 0)
+
+            start = parse_time(active.start)
+            end = parse_time(active.end)
+            
+            # Simple bounds check
+            if start <= end:
+                return start <= now <= end
+            else:
+                # Spans midnight (e.g. 23:00 to 08:00)
+                return start <= now or now <= end
+        except Exception:
+            return True  # Fail open

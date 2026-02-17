@@ -20,8 +20,10 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, system_prompt_style: str = "full", enable_reflection: bool = False):
         self.workspace = workspace
+        self.system_prompt_style = system_prompt_style
+        self.enable_reflection = enable_reflection
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
     
@@ -37,31 +39,40 @@ class ContextBuilder:
         """
         parts = []
         
+        if self.system_prompt_style == "none":
+            return ""
+
         # Core identity
-        parts.append(self._get_identity())
+        if self.system_prompt_style == "full":
+            parts.append(self._get_identity())
+        elif self.system_prompt_style == "minimal":
+            parts.append("You are a helpful AI assistant.")
         
-        # Bootstrap files
-        bootstrap = self._load_bootstrap_files()
-        if bootstrap:
-            parts.append(bootstrap)
+        # Bootstrap files (full only)
+        if self.system_prompt_style == "full":
+            bootstrap = self._load_bootstrap_files()
+            if bootstrap:
+                parts.append(bootstrap)
         
-        # Memory context
-        memory = self.memory.get_memory_context()
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
+        # Memory context (full only or explicitly requested in future)
+        if self.system_prompt_style == "full":
+            memory = self.memory.get_memory_context()
+            if memory:
+                parts.append(f"# Memory\n\n{memory}")
         
         # Skills - progressive loading
-        # 1. Always-loaded skills: include full content
+        # 1. Always-loaded skills
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
         
-        # 2. Available skills: only show summary (agent uses read_file to load)
-        skills_summary = self.skills.build_skills_summary()
-        if skills_summary:
-            parts.append(f"""# Skills
+        # 2. Available skills: only show summary in full mode
+        if self.system_prompt_style == "full":
+            skills_summary = self.skills.build_skills_summary()
+            if skills_summary:
+                parts.append(f"""# Skills
 
 The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
@@ -107,7 +118,13 @@ For normal conversation, just respond with text - do not call the message tool.
 
 Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
 When remembering something important, write to {workspace_path}/memory/MEMORY.md
+When remembering something important, write to {workspace_path}/memory/MEMORY.md
 To recall past events, grep {workspace_path}/memory/HISTORY.md"""
+
+        if self.enable_reflection:
+            base += "\n\nIMPORTANT: You must engage in reflection before answering. Start your response with a <thinking> block to analyze the request, plan your steps, and consider safety."
+        
+        return base
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""

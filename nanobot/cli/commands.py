@@ -359,6 +359,10 @@ def gateway(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
+        system_prompt_style=config.agents.defaults.system_prompt_style,
+        enable_safety_guard=config.agents.defaults.enable_safety_guard,
+        enable_reflection=config.agents.defaults.enable_reflection,
+        web_config=config.tools.web,
     )
     
     # Set cron callback (needs agent)
@@ -389,7 +393,8 @@ def gateway(
         workspace=config.workspace_path,
         on_heartbeat=on_heartbeat,
         interval_s=30 * 60,  # 30 minutes
-        enabled=True
+        enabled=True,
+        config=config.agents.heartbeat,
     )
     
     # Create channel manager
@@ -469,6 +474,10 @@ def agent(
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
+        system_prompt_style=config.agents.defaults.system_prompt_style,
+        enable_safety_guard=config.agents.defaults.enable_safety_guard,
+        enable_reflection=config.agents.defaults.enable_reflection,
+        web_config=config.tools.web,
     )
     
     # Show spinner when logs are off (no output to miss); skip when logs are on

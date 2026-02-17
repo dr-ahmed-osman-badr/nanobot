@@ -105,8 +105,10 @@ class WebFetchTool(Tool):
         "required": ["url"]
     }
     
-    def __init__(self, max_chars: int = 50000):
+    def __init__(self, max_chars: int = 50000, timeout: float = 30.0, user_agent: str | None = None):
         self.max_chars = max_chars
+        self.timeout = timeout
+        self.user_agent = user_agent or USER_AGENT
     
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         from readability import Document
@@ -122,9 +124,9 @@ class WebFetchTool(Tool):
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 max_redirects=MAX_REDIRECTS,
-                timeout=30.0
+                timeout=self.timeout
             ) as client:
-                r = await client.get(url, headers={"User-Agent": USER_AGENT})
+                r = await client.get(url, headers={"User-Agent": self.user_agent})
                 r.raise_for_status()
             
             ctype = r.headers.get("content-type", "")
