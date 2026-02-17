@@ -155,32 +155,95 @@ def main(
 
 @app.command()
 def onboard():
-    """Initialize nanobot configuration and workspace."""
+    """Initialize nanobot configuration and workspace (Interactive Wizard)."""
     from nanobot.config.loader import get_config_path, load_config, save_config
-    from nanobot.config.schema import Config
+    from nanobot.config.schema import Config, HeartbeatActiveHours
     from nanobot.utils.helpers import get_workspace_path
+    from rich.prompt import Prompt, Confirm, IntPrompt
     
     config_path = get_config_path()
     
+    console.print(f"\n{__logo__} [bold]Welcome to Nanobot Setup![/bold]\n")
+    
     if config_path.exists():
-        console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
-        console.print("  [bold]y[/bold] = overwrite with defaults (existing values will be lost)")
-        console.print("  [bold]N[/bold] = refresh config, keeping existing values and adding new fields")
-        if typer.confirm("Overwrite?"):
-            config = Config()
-            save_config(config)
-            console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
-        else:
-            config = load_config()
-            save_config(config)
-            console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
+        console.print(f"[yellow]Config found at {config_path}[/yellow]")
+        if not Confirm.ask("Overwrite existing configuration?", default=False):
+            console.print("[dim]Exiting...[/dim]")
+            return
+
+    config = Config()
+    
+    # 1. Provider Selection
+    console.print("\n[bold cyan]1. LLM Provider Setup[/bold cyan]")
+    provider = Prompt.ask(
+        "Select your primary LLM provider", 
+        choices=["openai", "anthropic", "openrouter", "deepseek", "gemini", "custom"], 
+        default="anthropic"
+    )
+    
+    api_key = Prompt.ask(f"Enter API Key for [green]{provider}[/green]", password=True)
+    
+    # Update provider config
+    if provider == "openai":
+        config.providers.openai.api_key = api_key
+        default_model = "gpt-4o"
+    elif provider == "anthropic":
+        config.providers.anthropic.api_key = api_key
+        default_model = "claude-3-5-sonnet-20240620"
+    elif provider == "openrouter":
+        config.providers.openrouter.api_key = api_key
+        default_model = "anthropic/claude-3.5-sonnet"
+    elif provider == "deepseek":
+        config.providers.deepseek.api_key = api_key
+        default_model = "deepseek-chat"
+    elif provider == "gemini":
+        config.providers.gemini.api_key = api_key
+        default_model = "gemini-1.5-pro-latest"
     else:
-        save_config(Config())
-        console.print(f"[green]✓[/green] Created config at {config_path}")
+        # Custom
+        config.providers.custom.api_key = api_key
+        base_url = Prompt.ask("Enter Base URL", default="http://localhost:11434/v1")
+        config.providers.custom.api_base = base_url
+        default_model = "llama3"
+
+    # 2. Model Selection
+    console.print("\n[bold cyan]2. Model Configuration[/bold cyan]")
+    model = Prompt.ask("Default Model ID", default=default_model)
+    config.agents.defaults.model = model
+    
+    # 3. Heartbeat
+    console.print("\n[bold cyan]3. Background Tasks (Heartbeat)[/bold cyan]")
+    if Confirm.ask("Enable periodic background tasks?", default=False):
+        config.agents.heartbeat.every = "30m"
+        
+        # Active Hours
+        start = Prompt.ask("Active from (HH:MM)", default="09:00")
+        end = Prompt.ask("Active until (HH:MM)", default="17:00")
+        tz = Prompt.ask("Timezone", default="UTC")
+        config.agents.heartbeat.active_hours = HeartbeatActiveHours(
+            start=start, end=end, timezone=tz
+        )
+        console.print("[dim]Heartbeat enabled (30m intervals).[/dim]")
+
+    # 4. Sandbox
+    console.print("\n[bold cyan]4. Security & Sandbox[/bold cyan]")
+    if Confirm.ask("Enable Docker Sandbox for code execution?", default=False):
+        config.sandbox.mode = "docker" # Assuming logic handles mapping this to implementation
+        image = Prompt.ask("Docker Image", default="python:3.11-slim")
+        config.sandbox.docker.image = image
+        console.print("[dim]Docker sandbox enabled.[/dim]")
+
+    if Confirm.ask("Enable Browser Sandbox (Headless)?", default=False):
+        config.sandbox.browser.enabled = True
+        config.sandbox.browser.headless = True
+        console.print("[dim]Browser sandbox enabled.[/dim]")
+
+    # Save
+    save_config(config)
+    console.print(f"\n[green]✓[/green] Configuration saved to {config_path}")
     
     # Create workspace
     workspace = get_workspace_path()
-    
     if not workspace.exists():
         workspace.mkdir(parents=True, exist_ok=True)
         console.print(f"[green]✓[/green] Created workspace at {workspace}")
@@ -188,12 +251,8 @@ def onboard():
     # Create default bootstrap files
     _create_workspace_templates(workspace)
     
-    console.print(f"\n{__logo__} nanobot is ready!")
-    console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
-    console.print("     Get one at: https://openrouter.ai/keys")
-    console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
-    console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
+    console.print(f"\n{__logo__} Setup Complete!")
+    console.print(f"Run [bold cyan]nanobot agent[/bold cyan] to start chatting.")
 
 
 
