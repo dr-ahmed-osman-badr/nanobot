@@ -225,11 +225,35 @@ class AgentsConfig(BaseModel):
 
 
 
+class ModelCost(BaseModel):
+    """Model cost configuration."""
+    input: float | None = None
+    output: float | None = None
+    cache_read: float | None = Field(default=None, alias="cacheRead")
+    cache_write: float | None = Field(default=None, alias="cacheWrite")
+
+
+class ModelDefinition(BaseModel):
+    """Specific model definition."""
+    id: str
+    name: str
+    context_window: int | None = Field(default=None, alias="contextWindow")
+    max_tokens: int | None = Field(default=None, alias="maxTokens")
+    cost: ModelCost | None = None
+    input: list[str] | None = None  # text, image
+
+
 class ProviderConfig(BaseModel):
     """LLM provider configuration."""
-    api_key: str = ""
-    api_base: str | None = None
-    extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    api_key: str = Field(default="", alias="apiKey")
+    api_base: str | None = Field(default=None, alias="baseUrl")
+    extra_headers: dict[str, str] | None = Field(default=None, alias="headers")
+    
+    # OpenClaw compatibility fields
+    models: list[ModelDefinition] | None = None
+    auth_type: str | None = Field(default=None, alias="auth")  # api-key, oauth, etc.
+    api_type: str | None = Field(default=None, alias="api")  # openai, anthropic, etc.
+    auth_header: bool | None = Field(default=None, alias="authHeader")
 
 
 class ProvidersConfig(BaseModel):
