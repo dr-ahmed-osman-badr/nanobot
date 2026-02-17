@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from loguru import logger
 from telegram import BotCommand, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 
 from nanobot.bus.events import OutboundMessage
@@ -157,6 +157,9 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("new", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._forward_command))
         
+        # Add callback query handler for interactive buttons
+        self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
+        
         # Add message handler for text, photos, voice, documents
         self._app.add_handler(
             MessageHandler(
@@ -289,6 +292,35 @@ class TelegramChannel(BaseChannel):
             sender_id=self._sender_id(update.effective_user),
             chat_id=str(update.message.chat_id),
             content=update.message.text,
+        )
+
+    async def _on_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle interactive button clicks."""
+        query = update.callback_query
+        
+        # Always answer callback queries to stop the loading animation
+        await query.answer()
+        
+        if not query.message or not query.from_user:
+            return
+            
+        data = query.data
+        user = query.from_user
+        chat_id = query.message.chat_id
+        sender_id = self._sender_id(user)
+        
+        logger.info(f"Telegram callback query from {sender_id}: {data}")
+        
+        # Construct a system-like message to the agent
+        content = f"[BUTTON_CLICK]: {data}"
+        
+        await self._dispatch_message(
+            sender_id=sender_id,
+            chat_id=chat_id,
+            user=user,
+            message_id=query.message.message_id,
+            content=content,
+            media_paths=[]
         )
     
     async def _process_media_attachment(self, message) -> tuple[str | None, str | None]:
